@@ -1,0 +1,314 @@
+--- a/themes/NekoRoX-v2/Scripts/Panel_Playlist.js
++++ b/themes/NekoRoX-v2/Scripts/Panel_Playlist.js
+@@ -40,6 +40,7 @@
+         show_playcount: ['user.row.play_count.show', _.cc('foo_playcount')],
+         show_rating: ['user.row.rating.show', _.cc('foo_playcount') && !g_is_mini_panel],
+         use_rating_from_tags: ['user.row.rating.from_tags', false],
++        show_rating_as_heart: ['user.row.rating.as_heart', true],
+         show_focused_row: ['user.row.focused.show', true],
+         show_queue_position: ['user.row.queue_position.show', true],
+ 
+@@ -51,7 +52,8 @@
+         playlist_group_data: ['system.playlist.grouping.data_list', ''],
+         playlist_custom_group_data: ['system.playlist.grouping.custom_data_list', ''],
+         default_group_name: ['system.playlist.grouping.default_preset_name', ''],
+-        group_presets: ['system.playlist.grouping.presets', '']
++        group_presets: ['system.playlist.grouping.presets', ''],
++        liked_sort_playlists: ['system.playlist.liked_sort', '[]']
+     }
+ );
+ 
+@@ -137,6 +139,7 @@
+ g_pl_colors.row_queued = _.RGBA(150, 150, 150, 0);
+ g_pl_colors.row_drop_position = _.RGB(140, 142, 144);
+ g_pl_colors.row_drop_position_boundary = _.RGB(255, 165, 0);
++g_pl_colors.rating_liked = _.RGB(245, 80, 110);
+ //---> Misc
+ g_pl_colors.dummy_text = _.RGB(80, 80, 80);
+ 
+@@ -745,6 +748,15 @@
+         var shift_pressed = utils.IsKeyPressed(VK_SHIFT);
+ 
+         var item = this.trace_list(x, y) ? this.get_item_under_mouse(x, y) : undefined;
++
++        // Heart is a button: one click toggles it without touching the selection or starting a drag.
++        if (g_properties.show_rating_as_heart && !ctrl_pressed && !shift_pressed
++            && _.isInstanceOf(item, Row) && item.rating_trace(x, y)) {
++            item.rating_click(x, y);
++            item.repaint();
++            return true;
++        }
++
+         last_hover_item = item;
+         last_pressed_coord.x = x;
+         last_pressed_coord.y = y;
+@@ -1160,6 +1172,10 @@
+         }
+ 
+         this.initialize_and_repaint_list();
++
++        if (is_liked_sort_kept()) {
++            keep_liked_on_top();
++        }
+     };
+ 
+     this.on_playlist_items_reordered = function (playlist_idx) {
+@@ -1167,6 +1183,14 @@
+             return;
+         }
+ 
++        if (liked_sort_reorder_pending) {
++            liked_sort_reorder_pending = false;
++        }
++        else if (is_liked_sort_kept()) {
++            // Any other reorder (another sort, shuffle, drag, undo) hands the order back to the user.
++            set_liked_sort_kept(false);
++        }
++
+         this.initialize_and_repaint_list(true);
+     };
+ 
+@@ -1242,6 +1266,10 @@
+ 
+     this.on_metadb_changed = function (handles, fromhook) {
+         this.on_playback_dynamic_info_track();
++
++        if (is_liked_sort_kept()) {
++            keep_liked_on_top();
++        }
+     };
+ 
+     this.on_get_album_art_done = function (metadb, art_id, image, image_path) {
+@@ -1543,6 +1571,27 @@
+                 }
+             }, this));
+ 
++        key_handler.register_key_action(VK_KEY_L,
++            _.bind(function (modifiers) {
++                if (!modifiers.ctrl || !g_properties.show_rating || !g_properties.show_rating_as_heart) {
++                    return;
++                }
++
++                var selected_rows = _.filter(this.cnt.rows, function (row) {
++                    return row.is_selected();
++                });
++                if (!selected_rows.length) {
++                    return;
++                }
++
++                // Mixed selections follow the first row, so one press makes them all match.
++                var like = !selected_rows[0].is_liked();
++                _.forEach(selected_rows, function (row) {
++                    row.set_liked(like);
++                });
++                this.repaint();
++            }, this));
++
+         key_handler.register_key_action(VK_F5,
+             _.bind(function (modifiers) {
+                 Header.art_cache.clear();
+@@ -2050,6 +2099,20 @@
+                 is_grayed_out: !g_component_playcount
+             }
+         );
++
++        appear_row.append_item(
++            'Rating as heart',
++            _.bind(function () {
++                g_properties.show_rating_as_heart = !g_properties.show_rating_as_heart;
++                _.forEach(this.cnt.rows, function (row) {
++                    row.set_w(row.w);
++                });
++            }, that),
++            {
++                is_checked: g_properties.show_rating_as_heart,
++                is_grayed_out: !g_properties.show_rating
++            }
++        );
+     }
+ 
+     /**
+@@ -2145,6 +2208,27 @@
+             }
+         );
+ 
++        // On a whole playlist this is a checkbox: while checked, liked tracks are kept on top.
++        var keeps_liked_sorted = !has_multiple_selected_items && is_liked_sort_kept();
++        sort.append_item(
++            'by liked',
++            function () {
++                if (has_multiple_selected_items) {
++                    sort_by_liked(true);
++                    return;
++                }
++
++                set_liked_sort_kept(!keeps_liked_sorted);
++                if (!keeps_liked_sorted) {
++                    keep_liked_on_top();
++                }
++            },
++            {
++                is_checked: keeps_liked_sorted,
++                is_grayed_out: !g_component_playcount && !g_properties.use_rating_from_tags
++            }
++        );
++
+         sort.append_separator();
+ 
+         sort.append_item(
+@@ -2173,6 +2257,54 @@
+     }
+ 
+     /**
++     * @return {boolean}
++     */
++    function is_liked_sort_kept() {
++        return cur_playlist_idx >= 0 && _.includes(JSON.parse(g_properties.liked_sort_playlists), plman.GetPlaylistName(cur_playlist_idx));
++    }
++
++    /**
++     * @param {boolean} keep
++     */
++    function set_liked_sort_kept(keep) {
++        var name = plman.GetPlaylistName(cur_playlist_idx);
++        var names = _.without(JSON.parse(g_properties.liked_sort_playlists), name);
++        if (keep) {
++            names.push(name);
++        }
++        g_properties.liked_sort_playlists = JSON.stringify(names);
++    }
++
++    /**
++     * Stable sort: tracks keep their order inside the liked and unliked groups.
++     * @param {boolean} selected_only
++     */
++    function sort_by_liked(selected_only) {
++        var rating_field = g_properties.use_rating_from_tags ? '$meta(rating)' : '%rating%';
++        plman.UndoBackup(cur_playlist_idx);
++        plman.SortByFormat(cur_playlist_idx, '$if(' + rating_field + ',0,1)', selected_only);
++    }
++
++    /**
++     * Re-sorts only when an unliked track sits above a liked one, so nothing moves needlessly.
++     */
++    function keep_liked_on_top() {
++        var seen_unliked = false;
++        var is_out_of_order = _.some(that.cnt.rows, function (row) {
++            if (!row.is_liked()) {
++                seen_unliked = true;
++                return false;
++            }
++            return seen_unliked;
++        });
++
++        if (is_out_of_order) {
++            liked_sort_reorder_pending = true;
++            sort_by_liked(false);
++        }
++    }
++
++    /**
+      * @param {Context.Menu} parent_menu
+      * @param {IFbMetadbHandle} metadb
+      */
+@@ -2700,6 +2832,9 @@
+     var mouse_on_item = false;
+     var key_down = false;
+ 
++    // Set right before this panel sorts by liked, so the reorder it causes is not mistaken for the user's
++    var liked_sort_reorder_pending = false;
++
+     // Item events
+     /** @type {?Row|?BaseHeader} */
+     var last_hover_item = undefined;
+@@ -4443,6 +4578,22 @@
+ /**
+  * @return {boolean}
+  */
++Row.prototype.is_liked = function () {
++    return this._rating.get_rating() > 0;
++};
++
++/**
++ * @param {boolean} like
++ */
++Row.prototype.set_liked = function (like) {
++    if (like !== this.is_liked()) {
++        this._rating.set_rating(like ? 5 : 0);
++    }
++};
++
++/**
++ * @return {boolean}
++ */
+ Row.prototype.is_selected = function () {
+     return plman.IsPlaylistItemSelected(this.cur_playlist_idx, this.idx);
+ };
+@@ -4465,7 +4616,7 @@
+      * @const
+      * @type {number}
+      */
+-    this.w = Math.min(Rating.btn_w * 5, max_w);
++    this.w = Math.min(g_properties.show_rating_as_heart ? Rating.heart_w : Rating.btn_w * 5, max_w);
+     /**
+      * @const
+      * @type {number}
+@@ -4482,12 +4633,21 @@
+ }
+ 
+ Rating.btn_w = 14;
++Rating.heart_w = 20;
+ 
+ /**
+  * @param {IGdiGraphics} gr
+  * @param {number} color
+  */
+ Rating.prototype.draw = function (gr, color) {
++    if (g_properties.show_rating_as_heart) {
++        // Any rating counts as liked, so stars set elsewhere still show a heart.
++        var is_liked = this.get_rating() > 0;
++        gr.DrawString(is_liked ? '\u2665' : '\u2661', g_pl_fonts.rating_set, is_liked ? g_pl_colors.rating_liked : color,
++            this.x, this.y - 1, this.w, this.h, g_string_format_center.value());
++        return;
++    }
++
+     var cur_rating = this.get_rating();
+     var cur_rating_x = this.x;
+ 
+@@ -4520,25 +4680,32 @@
+         return;
+     }
+ 
+-    var new_rating = Math.floor((x - this.x) / 14) + 1;
+     var current_rating = this.get_rating();
++    var new_rating = g_properties.show_rating_as_heart ? (current_rating || 5) : Math.floor((x - this.x) / 14) + 1;
++
++    this.set_rating((current_rating === new_rating) ? 0 : new_rating);
++};
+ 
++/**
++ * @param {number} new_rating 0 clears the rating
++ */
++Rating.prototype.set_rating = function (new_rating) {
+     if (g_properties.use_rating_from_tags) {
+         if (!_.startsWith(this.metadb.RawPath, 'http')) {
+             var handle = fb.CreateHandleList();
+             handle.Add(this.metadb);
+             handle.UpdateFileInfoFromJSON(
+                 JSON.stringify({
+-                    'RATING': (current_rating === new_rating) ? '' : new_rating
++                    'RATING': new_rating ? new_rating : ''
+                 })
+             );
+         }
+     }
+     else {
+-        fb.RunContextCommandWithMetadb('Rating/' + (current_rating === new_rating ? '<not set>' : new_rating), this.metadb);
++        fb.RunContextCommandWithMetadb('Rating/' + (new_rating ? new_rating : '<not set>'), this.metadb);
+     }
+ 
+-    this._rating = (current_rating === new_rating) ? 0 : new_rating;
++    this._rating = new_rating;
+ };
+ 
+ /**

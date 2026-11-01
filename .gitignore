@@ -1,0 +1,8 @@
+sdk/
+build/
+.vs/
+*.user
+*.7z
+*.fb2k-component
+art-unused/
+local/
