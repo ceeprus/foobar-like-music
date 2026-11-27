@@ -2,7 +2,7 @@
 
 DECLARE_COMPONENT_VERSION(
 	"Like Heart",
-	"1.0.0",
+	"1.0.1",
 	"Adds a clickable \"Like\" column to the Default UI playlist view.\n"
 	"Click the heart to like or unlike a track. A like is a Playback Statistics rating.\n"
 	"Also adds a \"Toggle Like\" command for keyboard shortcuts."
