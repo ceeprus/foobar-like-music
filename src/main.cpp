@@ -150,14 +150,19 @@ namespace {
 	bool isLikeColumnHit(HWND list, POINT screenPt) {
 		if (!isPlaylistView(list)) return false;
 		HWND header = FindWindowExW(list, nullptr, WC_HEADERW, nullptr);
-		if (header == nullptr || !IsWindowVisible(header)) return false;
-
-		RECT headerRect;
-		GetWindowRect(header, &headerRect);
-		if (screenPt.y < headerRect.bottom) return false;
+		if (header == nullptr) return false;
 
 		POINT pt = screenPt;
-		ScreenToClient(header, &pt);
+		if (IsWindowVisible(header)) {
+			RECT headerRect;
+			GetWindowRect(header, &headerRect);
+			if (screenPt.y < headerRect.bottom) return false;
+			ScreenToClient(header, &pt);
+		} else {
+			// With column titles off the header stays hidden and is not moved on horizontal scroll.
+			ScreenToClient(list, &pt);
+			pt.x += GetScrollPos(list, SB_HORZ);
+		}
 		const int count = Header_GetItemCount(header);
 		for (int i = 0; i < count; ++i) {
 			wchar_t text[64] = {};
